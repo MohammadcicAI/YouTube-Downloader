@@ -1,0 +1,968 @@
+# -*- coding: utf-8 -*-
+import os
+import sys
+import threading
+import time
+import io
+import json
+import re
+import queue
+import subprocess
+import urllib.request
+import tkinter as tk
+from tkinter import filedialog, messagebox
+
+import customtkinter as ctk
+from PIL import Image, ImageTk
+
+# Directory constants
+CUR_DIR = os.path.dirname(os.path.abspath(__file__))
+YT_DLP_EXE = os.path.join(CUR_DIR, "yt-dlp.exe")
+FFMPEG_EXE = os.path.join(CUR_DIR, "ffmpeg.exe")
+
+if not os.path.exists(YT_DLP_EXE):
+    YT_DLP_EXE = "yt-dlp"
+if not os.path.exists(FFMPEG_EXE):
+    FFMPEG_EXE = "ffmpeg"
+
+CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+
+DEFAULT_DOWNLOAD_DIR = os.path.join(os.path.expanduser("~"), "Downloads")
+if not os.path.exists(DEFAULT_DOWNLOAD_DIR):
+    DEFAULT_DOWNLOAD_DIR = os.path.join(os.path.expanduser("~"), "Desktop")
+
+REGEX_PROGRESS = re.compile(r'\[download\]\s+([0-9.]+)%\s+of.*?ETA\s+([0-9:]+)')
+
+# Multi-language dictionary
+STRINGS = {
+    "ar": {
+        "app_title": "مُحَمّل الفيديوهات والصوتيات",
+        "url_label": "🔗 رابط الفيديو:",
+        "url_placeholder": "الصق رابط يوتيوب هنا...",
+        "paste_btn": "📋 لصق",
+        "fetch_btn": "🔍 فحص",
+        "fetching": "جاري الفحص...",
+        "no_video": "معاينة الفيديو ستظهر هنا",
+        "no_title": "لم يتم فحص أي رابط بعد",
+        "duration_channel": "المدة: {dur}  |  القناة: {channel}",
+        "mode_title": "⚙️ اختر نوع التنزيل:",
+        "mode_video": "🎬 تنزيل فيديو",
+        "mode_audio": "🎵 تنزيل صوت",
+        "video_res_title": "اختر دقة الفيديو المطلوبة:",
+        "audio_res_title": "اختر جودة الصوت المطلوبة:",
+        "res_best": "أعلى دقة متوفرة (Best)",
+        "res_4k": "دقة 4K فائقة (2160p)",
+        "res_1080p": "دقة 1080p Full HD",
+        "res_720p": "دقة 720p HD",
+        "res_480p": "دقة 480p سريع",
+        "audio_mp3_320": "MP3 عالي النقاوة (320 kbps)",
+        "audio_mp3_192": "MP3 جودة قياسية (192 kbps)",
+        "audio_m4a": "M4A الصيغة الأصلية",
+        "folder_label": "📁 مجلد الحفظ:",
+        "browse_btn": "تغيير المجلد...",
+        "open_folder_btn": "فتح المجلد 📂",
+        "start_btn": "⬇️ بدء التنزيل الآن",
+        "cancel_btn": "⏹️ إلغاء",
+        "ready_status": "جاهز للبدء",
+        "downloading_status": "جاري التنزيل...",
+        "processing_status": "جاري دمج وتحويل الملف...",
+        "done_status": "اكتمل التنزيل بنجاح! 🎉",
+        "cancelled_status": "تم إلغاء التنزيل",
+        "failed_status": "حدث خطأ أثناء التنزيل",
+        "eta_label": "الوقت المتبقي: {eta}",
+        "eta_initial": "الوقت المتبقي: --:--",
+        "open_prompt_title": "اكتمل التنزيل",
+        "open_prompt_msg": "تم تنزيل الملف بنجاح!\n\nهل ترغب في فتح مجلد الحفظ الآن؟",
+        "empty_url_warning": "يرجى إدخال أو لصق رابط فيديو أولاً.",
+        "clipboard_empty": "الحافظة فارغة أو لا تحتوي على رابط صالح."
+    },
+    "en": {
+        "app_title": "Video & Audio Downloader",
+        "url_label": "🔗 Video Link:",
+        "url_placeholder": "Paste YouTube link here...",
+        "paste_btn": "📋 Paste",
+        "fetch_btn": "🔍 Fetch",
+        "fetching": "Fetching...",
+        "no_video": "Video preview will appear here",
+        "no_title": "No link loaded yet",
+        "duration_channel": "Duration: {dur}  |  Channel: {channel}",
+        "mode_title": "⚙️ Select Download Type:",
+        "mode_video": "🎬 Download Video",
+        "mode_audio": "🎵 Download Audio",
+        "video_res_title": "Select Video Resolution:",
+        "audio_res_title": "Select Audio Quality:",
+        "res_best": "Best Available Quality",
+        "res_4k": "4K Ultra HD (2160p)",
+        "res_1080p": "1080p Full HD",
+        "res_720p": "720p HD",
+        "res_480p": "480p Fast",
+        "audio_mp3_320": "MP3 High Quality (320 kbps)",
+        "audio_mp3_192": "MP3 Standard (192 kbps)",
+        "audio_m4a": "M4A Original Format",
+        "folder_label": "📁 Save Folder:",
+        "browse_btn": "Browse...",
+        "open_folder_btn": "Open Folder 📂",
+        "start_btn": "⬇️ Download Now",
+        "cancel_btn": "⏹️ Cancel",
+        "ready_status": "Ready to start",
+        "downloading_status": "Downloading...",
+        "processing_status": "Processing & merging final file...",
+        "done_status": "Download Completed Successfully! 🎉",
+        "cancelled_status": "Download Cancelled",
+        "failed_status": "An error occurred during download",
+        "eta_label": "Time Left: {eta}",
+        "eta_initial": "Time Left: --:--",
+        "open_prompt_title": "Download Complete",
+        "open_prompt_msg": "File downloaded successfully!\n\nWould you like to open the folder now?",
+        "empty_url_warning": "Please enter or paste a video link first.",
+        "clipboard_empty": "Clipboard is empty or does not contain a valid URL."
+    }
+}
+
+
+class YouTubeDownloaderApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+
+        # Window configuration
+        self.geometry("820x760")
+        self.minsize(760, 700)
+
+        # Set default appearance
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("blue")
+
+        # Set icon
+        icon_path = os.path.join(CUR_DIR, "icon.ico")
+        if os.path.exists(icon_path):
+            try:
+                self.iconbitmap(icon_path)
+            except Exception:
+                pass
+
+        # Variables
+        self.lang = "ar"  # Default Arabic
+        self.download_dir = tk.StringVar(value=DEFAULT_DOWNLOAD_DIR)
+        self.url_var = tk.StringVar()
+        
+        # Mode: 'video' or 'audio'
+        self.download_type = tk.StringVar(value="video")
+        self.video_quality = tk.StringVar(value="best")
+        self.audio_quality = tk.StringVar(value="mp3_320")
+
+        self.is_downloading = False
+        self.current_process = None
+        self.active_thumbnail = None
+        self.current_video_info = None
+
+        # Thread-safe message queue for UI updates
+        self.msg_queue = queue.Queue()
+
+        self._build_ui()
+        self._apply_language()
+
+    def _t(self, key, **kwargs):
+        text = STRINGS[self.lang].get(key, key)
+        if kwargs:
+            text = text.format(**kwargs)
+        return text
+
+    def _build_ui(self):
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        # Main scrollable container
+        self.main_container = ctk.CTkScrollableFrame(self, corner_radius=12)
+        self.main_container.grid(row=0, column=0, sticky="nsew", padx=16, pady=16)
+        self.main_container.grid_columnconfigure(0, weight=1)
+
+        # ---------------- Header Frame ----------------
+        header_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
+        header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+        header_frame.grid_columnconfigure(0, weight=1)
+
+        self.title_lbl = ctk.CTkLabel(
+            header_frame,
+            text="",
+            font=ctk.CTkFont(size=26, weight="bold")
+        )
+        self.title_lbl.grid(row=0, column=0, sticky="w", padx=6)
+
+        # Controls (Language & Theme)
+        ctrl_frame = ctk.CTkFrame(header_frame, fg_color="transparent")
+        ctrl_frame.grid(row=0, column=1, sticky="e", padx=4)
+
+        self.lang_segmented = ctk.CTkSegmentedButton(
+            ctrl_frame,
+            values=["العربية", "English"],
+            font=ctk.CTkFont(size=14, weight="bold"),
+            command=self._on_lang_switch
+        )
+        self.lang_segmented.set("العربية")
+        self.lang_segmented.pack(side="left", padx=8)
+
+        self.theme_switch = ctk.CTkSwitch(
+            ctrl_frame,
+            text="🌙",
+            font=ctk.CTkFont(size=16),
+            command=self._toggle_theme,
+            onvalue="dark",
+            offvalue="light",
+            width=45
+        )
+        self.theme_switch.select()
+        self.theme_switch.pack(side="left", padx=4)
+
+        # ---------------- 1. URL Input Section (Top) ----------------
+        url_box = ctk.CTkFrame(self.main_container, corner_radius=12)
+        url_box.grid(row=1, column=0, sticky="ew", pady=6, padx=4)
+        url_box.grid_columnconfigure(0, weight=1)
+
+        self.url_header_lbl = ctk.CTkLabel(
+            url_box,
+            text="",
+            font=ctk.CTkFont(size=17, weight="bold")
+        )
+        self.url_header_lbl.grid(row=0, column=0, columnspan=3, sticky="w", padx=16, pady=(12, 6))
+
+        entry_row = ctk.CTkFrame(url_box, fg_color="transparent")
+        entry_row.grid(row=1, column=0, columnspan=3, sticky="ew", padx=14, pady=(0, 14))
+        entry_row.grid_columnconfigure(0, weight=1)
+
+        self.url_entry = ctk.CTkEntry(
+            entry_row,
+            textvariable=self.url_var,
+            placeholder_text="",
+            height=46,
+            font=ctk.CTkFont(size=15)
+        )
+        self.url_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.url_entry.bind("<Return>", lambda event: self._fetch_info_thread())
+
+        self.paste_btn = ctk.CTkButton(
+            entry_row,
+            text="",
+            width=95,
+            height=46,
+            font=ctk.CTkFont(size=15, weight="bold"),
+            command=self._paste_clipboard
+        )
+        self.paste_btn.grid(row=0, column=1, padx=(0, 6))
+
+        self.fetch_btn = ctk.CTkButton(
+            entry_row,
+            text="",
+            width=95,
+            height=46,
+            font=ctk.CTkFont(size=15, weight="bold"),
+            fg_color="#1f538d",
+            hover_color="#14375e",
+            command=self._fetch_info_thread
+        )
+        self.fetch_btn.grid(row=0, column=2)
+
+        # ---------------- 2. Video Thumbnail & Counter Section ----------------
+        preview_counter_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
+        preview_counter_frame.grid(row=2, column=0, sticky="ew", pady=6, padx=4)
+        preview_counter_frame.grid_columnconfigure(0, weight=3) # Video info
+        preview_counter_frame.grid_columnconfigure(1, weight=2) # Counter widget
+
+        # Left: Video Card with Thumbnail
+        self.info_card = ctk.CTkFrame(preview_counter_frame, corner_radius=12, fg_color=("gray90", "#242424"))
+        self.info_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        self.info_card.grid_columnconfigure(1, weight=1)
+
+        self.thumb_label = ctk.CTkLabel(
+            self.info_card,
+            text="",
+            width=175,
+            height=105,
+            fg_color=("gray82", "#1a1a1a"),
+            corner_radius=8,
+            font=ctk.CTkFont(size=13)
+        )
+        self.thumb_label.grid(row=0, column=0, rowspan=2, padx=12, pady=12, sticky="nsew")
+
+        self.video_title_lbl = ctk.CTkLabel(
+            self.info_card,
+            text="",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            anchor="w",
+            wraplength=280
+        )
+        self.video_title_lbl.grid(row=0, column=1, sticky="nw", padx=10, pady=(14, 4))
+
+        self.video_details_lbl = ctk.CTkLabel(
+            self.info_card,
+            text="",
+            font=ctk.CTkFont(size=13),
+            text_color="gray70",
+            anchor="w"
+        )
+        self.video_details_lbl.grid(row=1, column=1, sticky="sw", padx=10, pady=(0, 14))
+
+        # Right: Single Dedicated Counter Card
+        self.counter_card = ctk.CTkFrame(preview_counter_frame, corner_radius=12, fg_color=("gray90", "#202020"))
+        self.counter_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        self.counter_card.grid_columnconfigure(0, weight=1)
+
+        self.counter_percent_lbl = ctk.CTkLabel(
+            self.counter_card,
+            text="0%",
+            font=ctk.CTkFont(size=44, weight="bold"),
+            text_color="#e74c3c"
+        )
+        self.counter_percent_lbl.grid(row=0, column=0, pady=(14, 2))
+
+        self.progress_bar = ctk.CTkProgressBar(self.counter_card, height=12)
+        self.progress_bar.set(0)
+        self.progress_bar.grid(row=1, column=0, sticky="ew", padx=18, pady=4)
+
+        self.counter_eta_lbl = ctk.CTkLabel(
+            self.counter_card,
+            text="",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            text_color="#3498db"
+        )
+        self.counter_eta_lbl.grid(row=2, column=0, pady=2)
+
+        self.status_lbl = ctk.CTkLabel(
+            self.counter_card,
+            text="",
+            font=ctk.CTkFont(size=13),
+            text_color="gray75"
+        )
+        self.status_lbl.grid(row=3, column=0, pady=(0, 12))
+
+        # ---------------- 3. Format Selection: Video OR Audio Switcher ----------------
+        format_main_box = ctk.CTkFrame(self.main_container, corner_radius=12)
+        format_main_box.grid(row=3, column=0, sticky="ew", pady=6, padx=4)
+        format_main_box.grid_columnconfigure(0, weight=1)
+
+        self.mode_header_lbl = ctk.CTkLabel(
+            format_main_box,
+            text="",
+            font=ctk.CTkFont(size=17, weight="bold")
+        )
+        self.mode_header_lbl.grid(row=0, column=0, sticky="w", padx=16, pady=(12, 6))
+
+        # Two big buttons to choose Video OR Audio
+        type_switch_row = ctk.CTkFrame(format_main_box, fg_color="transparent")
+        type_switch_row.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 8))
+        type_switch_row.grid_columnconfigure((0, 1), weight=1)
+
+        self.video_mode_btn = ctk.CTkButton(
+            type_switch_row,
+            text="",
+            height=46,
+            font=ctk.CTkFont(size=16, weight="bold"),
+            command=lambda: self._set_mode("video")
+        )
+        self.video_mode_btn.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+
+        self.audio_mode_btn = ctk.CTkButton(
+            type_switch_row,
+            text="",
+            height=46,
+            font=ctk.CTkFont(size=16, weight="bold"),
+            command=lambda: self._set_mode("audio")
+        )
+        self.audio_mode_btn.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+
+        # --- Dynamic Sub-Options Container ---
+        self.sub_options_container = ctk.CTkFrame(format_main_box, fg_color=("gray88", "#222222"), corner_radius=8)
+        self.sub_options_container.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 14))
+        self.sub_options_container.grid_columnconfigure(0, weight=1)
+
+        # 3A. Video Sub-Options Frame (Visible when video is chosen)
+        self.video_sub_frame = ctk.CTkFrame(self.sub_options_container, fg_color="transparent")
+        self.video_sub_frame.grid_columnconfigure((0, 1), weight=1)
+
+        self.video_res_title = ctk.CTkLabel(
+            self.video_sub_frame,
+            text="",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color="#e67e22"
+        )
+        self.video_res_title.grid(row=0, column=0, columnspan=2, sticky="w", padx=12, pady=(8, 4))
+
+        self.rb_v_best = ctk.CTkRadioButton(
+            self.video_sub_frame,
+            text="",
+            value="best",
+            variable=self.video_quality,
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.rb_v_best.grid(row=1, column=0, sticky="w", padx=12, pady=6)
+
+        self.rb_v_4k = ctk.CTkRadioButton(
+            self.video_sub_frame,
+            text="",
+            value="4k",
+            variable=self.video_quality,
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.rb_v_4k.grid(row=1, column=1, sticky="w", padx=12, pady=6)
+
+        self.rb_v_1080p = ctk.CTkRadioButton(
+            self.video_sub_frame,
+            text="",
+            value="1080p",
+            variable=self.video_quality,
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.rb_v_1080p.grid(row=2, column=0, sticky="w", padx=12, pady=6)
+
+        self.rb_v_720p = ctk.CTkRadioButton(
+            self.video_sub_frame,
+            text="",
+            value="720p",
+            variable=self.video_quality,
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.rb_v_720p.grid(row=2, column=1, sticky="w", padx=12, pady=6)
+
+        self.rb_v_480p = ctk.CTkRadioButton(
+            self.video_sub_frame,
+            text="",
+            value="480p",
+            variable=self.video_quality,
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.rb_v_480p.grid(row=3, column=0, sticky="w", padx=12, pady=(6, 10))
+
+        # 3B. Audio Sub-Options Frame (Visible when audio is chosen)
+        self.audio_sub_frame = ctk.CTkFrame(self.sub_options_container, fg_color="transparent")
+        self.audio_sub_frame.grid_columnconfigure((0, 1), weight=1)
+
+        self.audio_res_title = ctk.CTkLabel(
+            self.audio_sub_frame,
+            text="",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color="#9b59b6"
+        )
+        self.audio_res_title.grid(row=0, column=0, columnspan=2, sticky="w", padx=12, pady=(8, 4))
+
+        self.rb_a_320 = ctk.CTkRadioButton(
+            self.audio_sub_frame,
+            text="",
+            value="mp3_320",
+            variable=self.audio_quality,
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.rb_a_320.grid(row=1, column=0, sticky="w", padx=12, pady=6)
+
+        self.rb_a_192 = ctk.CTkRadioButton(
+            self.audio_sub_frame,
+            text="",
+            value="mp3_192",
+            variable=self.audio_quality,
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.rb_a_192.grid(row=1, column=1, sticky="w", padx=12, pady=6)
+
+        self.rb_a_m4a = ctk.CTkRadioButton(
+            self.audio_sub_frame,
+            text="",
+            value="m4a",
+            variable=self.audio_quality,
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.rb_a_m4a.grid(row=2, column=0, sticky="w", padx=12, pady=(6, 10))
+
+        # Show initial mode
+        self._update_mode_visibility()
+
+        # ---------------- 4. Save Folder Section ----------------
+        folder_box = ctk.CTkFrame(self.main_container, corner_radius=12)
+        folder_box.grid(row=4, column=0, sticky="ew", pady=6, padx=4)
+        folder_box.grid_columnconfigure(1, weight=1)
+
+        self.folder_title_lbl = ctk.CTkLabel(
+            folder_box,
+            text="",
+            font=ctk.CTkFont(size=17, weight="bold")
+        )
+        self.folder_title_lbl.grid(row=0, column=0, columnspan=3, sticky="w", padx=16, pady=(12, 6))
+
+        folder_row = ctk.CTkFrame(folder_box, fg_color="transparent")
+        folder_row.grid(row=1, column=0, columnspan=3, sticky="ew", padx=14, pady=(0, 14))
+        folder_row.grid_columnconfigure(0, weight=1)
+
+        self.folder_entry = ctk.CTkEntry(
+            folder_row,
+            textvariable=self.download_dir,
+            height=42,
+            font=ctk.CTkFont(size=14)
+        )
+        self.folder_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+
+        self.browse_btn = ctk.CTkButton(
+            folder_row,
+            text="",
+            width=115,
+            height=42,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            command=self._browse_folder
+        )
+        self.browse_btn.grid(row=0, column=1, padx=(0, 6))
+
+        self.open_folder_btn = ctk.CTkButton(
+            folder_row,
+            text="",
+            width=120,
+            height=42,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="#4b6584",
+            hover_color="#38495a",
+            command=self._open_download_dir
+        )
+        self.open_folder_btn.grid(row=0, column=2)
+
+        # ---------------- 5. Action Buttons ----------------
+        action_row = ctk.CTkFrame(self.main_container, fg_color="transparent")
+        action_row.grid(row=5, column=0, sticky="ew", pady=(10, 8))
+        action_row.grid_columnconfigure((0, 1), weight=1)
+
+        self.start_btn = ctk.CTkButton(
+            action_row,
+            text="",
+            height=54,
+            font=ctk.CTkFont(size=18, weight="bold"),
+            fg_color="#e74c3c",
+            hover_color="#c0392b",
+            command=self._start_download_thread
+        )
+        self.start_btn.grid(row=0, column=0, sticky="ew", padx=(8, 6))
+
+        self.cancel_btn = ctk.CTkButton(
+            action_row,
+            text="",
+            height=54,
+            font=ctk.CTkFont(size=16, weight="bold"),
+            fg_color="#7f8c8d",
+            hover_color="#95a5a6",
+            state="disabled",
+            command=self._cancel_download
+        )
+        self.cancel_btn.grid(row=0, column=1, sticky="ew", padx=(6, 8))
+
+    # ---------------- Mode Switching (Video vs Audio) ----------------
+    def _set_mode(self, mode):
+        self.download_type.set(mode)
+        self._update_mode_visibility()
+
+    def _update_mode_visibility(self):
+        mode = self.download_type.get()
+        if mode == "video":
+            self.video_mode_btn.configure(fg_color="#d35400", hover_color="#ba4a00")
+            self.audio_mode_btn.configure(fg_color=("gray75", "gray30"), hover_color=("gray65", "gray40"))
+            self.audio_sub_frame.pack_forget()
+            self.video_sub_frame.pack(fill="x", padx=4, pady=4)
+        else:
+            self.audio_mode_btn.configure(fg_color="#8e44ad", hover_color="#7d3c98")
+            self.video_mode_btn.configure(fg_color=("gray75", "gray30"), hover_color=("gray65", "gray40"))
+            self.video_sub_frame.pack_forget()
+            self.audio_sub_frame.pack(fill="x", padx=4, pady=4)
+
+    # ---------------- Language Switch ----------------
+    def _on_lang_switch(self, val):
+        self.lang = "ar" if val == "العربية" else "en"
+        self._apply_language()
+
+    def _apply_language(self):
+        # Update Window Title
+        self.title(self._t("app_title"))
+        self.title_lbl.configure(text=self._t("app_title"))
+
+        # URL section
+        self.url_header_lbl.configure(text=self._t("url_label"))
+        self.url_entry.configure(placeholder_text=self._t("url_placeholder"))
+        self.paste_btn.configure(text=self._t("paste_btn"))
+        self.fetch_btn.configure(text=self._t("fetch_btn"))
+
+        # Video section
+        if not self.active_thumbnail:
+            self.thumb_label.configure(text=self._t("no_video"))
+        if not self.current_video_info:
+            self.video_title_lbl.configure(text=self._t("no_title"))
+            self.video_details_lbl.configure(text=self._t("duration_channel", dur="--", channel="--"))
+        else:
+            self._render_video_info(self.current_video_info)
+
+        # Counter section
+        if not self.is_downloading:
+            self.status_lbl.configure(text=self._t("ready_status"))
+            self.counter_eta_lbl.configure(text=self._t("eta_initial"))
+
+        # Mode headers & buttons
+        self.mode_header_lbl.configure(text=self._t("mode_title"))
+        self.video_mode_btn.configure(text=self._t("mode_video"))
+        self.audio_mode_btn.configure(text=self._t("mode_audio"))
+
+        # Video sub-options
+        self.video_res_title.configure(text=self._t("video_res_title"))
+        self.rb_v_best.configure(text=self._t("res_best"))
+        self.rb_v_4k.configure(text=self._t("res_4k"))
+        self.rb_v_1080p.configure(text=self._t("res_1080p"))
+        self.rb_v_720p.configure(text=self._t("res_720p"))
+        self.rb_v_480p.configure(text=self._t("res_480p"))
+
+        # Audio sub-options
+        self.audio_res_title.configure(text=self._t("audio_res_title"))
+        self.rb_a_320.configure(text=self._t("audio_mp3_320"))
+        self.rb_a_192.configure(text=self._t("audio_mp3_192"))
+        self.rb_a_m4a.configure(text=self._t("audio_m4a"))
+
+        # Folder section
+        self.folder_title_lbl.configure(text=self._t("folder_label"))
+        self.browse_btn.configure(text=self._t("browse_btn"))
+        self.open_folder_btn.configure(text=self._t("open_folder_btn"))
+
+        # Action buttons
+        self.start_btn.configure(text=self._t("start_btn"))
+        self.cancel_btn.configure(text=self._t("cancel_btn"))
+
+    def _toggle_theme(self):
+        mode = self.theme_switch.get()
+        ctk.set_appearance_mode(mode)
+
+    # ---------------- UI Actions ----------------
+    def _paste_clipboard(self):
+        try:
+            text = self.clipboard_get().strip()
+            if text:
+                self.url_var.set(text)
+                self._fetch_info_thread()
+            else:
+                messagebox.showinfo("!", self._t("clipboard_empty"))
+        except Exception:
+            messagebox.showinfo("!", self._t("clipboard_empty"))
+
+    def _browse_folder(self):
+        chosen = filedialog.askdirectory(initialdir=self.download_dir.get())
+        if chosen:
+            self.download_dir.set(chosen)
+
+    def _open_download_dir(self):
+        folder = self.download_dir.get()
+        if os.path.exists(folder):
+            os.startfile(folder)
+        else:
+            messagebox.showerror("Error", f"Folder not found:\n{folder}")
+
+    # ---------------- Fetch Video Information ----------------
+    def _fetch_info_thread(self):
+        url = self.url_var.get().strip()
+        if not url:
+            return
+
+        self.fetch_btn.configure(state="disabled", text=self._t("fetching"))
+        self.status_lbl.configure(text=self._t("fetching"), text_color="#3498db")
+
+        threading.Thread(target=self._fetch_info_worker, args=(url,), daemon=True).start()
+
+    def _fetch_info_worker(self, url):
+        cmd = [
+            YT_DLP_EXE,
+            "--dump-single-json",
+            "--no-warnings",
+            "--skip-download",
+            url
+        ]
+        try:
+            res = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=CREATE_NO_WINDOW
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                data = json.loads(res.stdout)
+                self.msg_queue.put(('info_success', data))
+            else:
+                self.msg_queue.put(('info_error', None))
+        except Exception:
+            self.msg_queue.put(('info_error', None))
+
+    def _on_info_fetched(self, data):
+        self.fetch_btn.configure(state="normal", text=self._t("fetch_btn"))
+        self.status_lbl.configure(text=self._t("ready_status"), text_color="#2ecc71")
+        self.current_video_info = data
+        self._render_video_info(data)
+
+        # Load thumbnail
+        thumb_url = data.get("thumbnail")
+        if thumb_url:
+            threading.Thread(target=self._load_thumbnail, args=(thumb_url,), daemon=True).start()
+
+    def _render_video_info(self, data):
+        title = data.get("title", "")
+        uploader = data.get("uploader") or data.get("channel", "--")
+        dur_sec = data.get("duration", 0)
+
+        if dur_sec:
+            m, s = divmod(int(dur_sec), 60)
+            h, m = divmod(m, 60)
+            dur_str = f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+        else:
+            dur_str = "--:--"
+
+        self.video_title_lbl.configure(text=title)
+        self.video_details_lbl.configure(text=self._t("duration_channel", dur=dur_str, channel=uploader))
+
+    def _load_thumbnail(self, thumb_url):
+        try:
+            req = urllib.request.Request(thumb_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = resp.read()
+            pil_img = Image.open(io.BytesIO(data))
+            pil_img.thumbnail((200, 120))
+            ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(175, 105))
+            self.active_thumbnail = ctk_img
+            self.msg_queue.put(('thumbnail_loaded', ctk_img))
+        except Exception:
+            pass
+
+    def _on_fetch_error(self):
+        self.fetch_btn.configure(state="normal", text=self._t("fetch_btn"))
+        self.status_lbl.configure(text=self._t("failed_status"), text_color="#e74c3c")
+
+    # ---------------- Download Execution ----------------
+    def _start_download_thread(self):
+        if self.is_downloading:
+            return
+
+        url = self.url_var.get().strip()
+        if not url:
+            messagebox.showwarning("!", self._t("empty_url_warning"))
+            return
+
+        save_path = self.download_dir.get().strip()
+        if not os.path.exists(save_path):
+            try:
+                os.makedirs(save_path, exist_ok=True)
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+                return
+
+        # Read ALL Tkinter variables safely on MAIN THREAD
+        mode = self.download_type.get()
+        v_res = self.video_quality.get()
+        a_fmt = self.audio_quality.get()
+
+        cmd = self._build_command(url, save_path, mode, v_res, a_fmt)
+
+        self.is_downloading = True
+        self.start_btn.configure(state="disabled")
+        self.cancel_btn.configure(state="normal")
+        self.progress_bar.set(0)
+        self.counter_percent_lbl.configure(text="0%")
+        self.counter_eta_lbl.configure(text=self._t("eta_initial"))
+        self.status_lbl.configure(text=self._t("downloading_status"), text_color="#e67e22")
+
+        # Clear queue
+        while not self.msg_queue.empty():
+            try:
+                self.msg_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        # Start background download thread
+        threading.Thread(target=self._download_worker, args=(cmd, mode), daemon=True).start()
+
+        # Start queue poller on the main thread
+        self.after(50, self._poll_queue)
+
+    def _poll_queue(self):
+        """Thread-safe UI updates pumped from the background worker via Queue"""
+        try:
+            while True:
+                item = self.msg_queue.get_nowait()
+                msg_type = item[0]
+
+                if msg_type == 'progress':
+                    _, ratio, percent, eta_str = item
+                    self.progress_bar.set(ratio)
+                    self.counter_percent_lbl.configure(text=f"{int(percent)}%")
+                    self.counter_eta_lbl.configure(text=self._t("eta_label", eta=eta_str))
+
+                elif msg_type == 'processing':
+                    self.progress_bar.set(0.96)
+                    self.counter_percent_lbl.configure(text="96%")
+                    self.status_lbl.configure(text=self._t("processing_status"), text_color="#f39c12")
+
+                elif msg_type == 'done':
+                    _, success, cancelled = item
+                    self._on_download_finished(success, cancelled)
+                    return
+
+                elif msg_type == 'info_success':
+                    self._on_info_fetched(item[1])
+
+                elif msg_type == 'info_error':
+                    self._on_fetch_error()
+
+                elif msg_type == 'thumbnail_loaded':
+                    self.thumb_label.configure(image=item[1], text="")
+
+        except queue.Empty:
+            pass
+
+        # Keep polling while downloading or fetching
+        self.after(50, self._poll_queue)
+
+    def _cancel_download(self):
+        if self.is_downloading and self.current_process:
+            try:
+                self.current_process.kill()
+            except Exception:
+                pass
+            self.status_lbl.configure(text=self._t("cancelled_status"), text_color="#e74c3c")
+
+    def _build_command(self, url, save_path, mode, v_res, a_fmt):
+        outtmpl = os.path.join(save_path, "%(title)s.%(ext)s")
+
+        cmd = [
+            YT_DLP_EXE,
+            "--newline",
+            "--progress-template",
+            "PROGRESS_DATA:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress._total_bytes_str)s",
+            "--ffmpeg-location", FFMPEG_EXE,
+            "--windows-filenames",
+            "-o", outtmpl,
+        ]
+
+        if mode == "video":
+            if v_res == "4k":
+                cmd += ["-f", "bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160][ext=mp4]/best", "--merge-output-format", "mp4"]
+            elif v_res == "1080p":
+                cmd += ["-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best", "--merge-output-format", "mp4"]
+            elif v_res == "720p":
+                cmd += ["-f", "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best", "--merge-output-format", "mp4"]
+            elif v_res == "480p":
+                cmd += ["-f", "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best", "--merge-output-format", "mp4"]
+            else: # best
+                cmd += ["-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best", "--merge-output-format", "mp4"]
+        else: # audio
+            if a_fmt == "mp3_320":
+                cmd += ["-x", "--audio-format", "mp3", "--audio-quality", "320k"]
+            elif a_fmt == "mp3_192":
+                cmd += ["-x", "--audio-format", "mp3", "--audio-quality", "192k"]
+            elif a_fmt == "m4a":
+                cmd += ["-x", "--audio-format", "m4a"]
+
+        cmd.append(url)
+        return cmd
+
+    def _download_worker(self, cmd, mode):
+        cancelled = False
+        success = False
+        stream_count = 0
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                creationflags=CREATE_NO_WINDOW
+            )
+            self.current_process = proc
+
+            for raw_line in proc.stdout:
+                line = raw_line.strip()
+                if not line:
+                    continue
+
+                # Stream detection for smooth multi-step percentage
+                if "[download] Destination:" in line:
+                    stream_count += 1
+
+                p_val = None
+                eta_str = "--:--"
+
+                if "PROGRESS_DATA:" in line:
+                    parts = line.replace("PROGRESS_DATA:", "").split("|")
+                    if len(parts) >= 3:
+                        p_raw = parts[0].replace("%", "").strip()
+                        try:
+                            p_val = float(p_raw)
+                        except ValueError:
+                            pass
+                        raw_eta = parts[2].strip()
+                        if raw_eta and raw_eta not in ("NA", "Unknown"):
+                            eta_str = raw_eta
+
+                elif "[download]" in line and "%" in line:
+                    m = REGEX_PROGRESS.search(line)
+                    if m:
+                        try:
+                            p_val = float(m.group(1))
+                            eta_str = m.group(2)
+                        except (ValueError, IndexError):
+                            pass
+
+                # If progress value was parsed, calculate smooth overall progress
+                if p_val is not None:
+                    if mode == "video":
+                        if stream_count <= 1:
+                            # Video stream: scales 0% -> 85%
+                            overall = p_val * 0.85
+                        else:
+                            # Audio stream: scales 85% -> 95%
+                            overall = 85.0 + (p_val * 0.10)
+                    else:
+                        # Audio only: scales 0% -> 90%
+                        overall = p_val * 0.90
+
+                    ratio = min(max(overall / 100.0, 0.0), 0.99)
+                    self.msg_queue.put(('progress', ratio, overall, eta_str))
+
+                # Processing stage
+                if "[ExtractAudio]" in line or "[Merger]" in line:
+                    self.msg_queue.put(('processing',))
+
+            proc.wait()
+            if proc.returncode == 0:
+                success = True
+            elif proc.returncode < 0:
+                cancelled = True
+        except Exception:
+            pass
+
+        self.msg_queue.put(('done', success, cancelled))
+
+    def _on_download_finished(self, success, cancelled):
+        self.is_downloading = False
+        self.current_process = None
+        self.start_btn.configure(state="normal")
+        self.cancel_btn.configure(state="disabled")
+
+        if cancelled:
+            self.status_lbl.configure(text=self._t("cancelled_status"), text_color="#e74c3c")
+            self.counter_eta_lbl.configure(text=self._t("eta_initial"))
+        elif success:
+            self.progress_bar.set(1.0)
+            self.counter_percent_lbl.configure(text="100%")
+            self.counter_eta_lbl.configure(text=self._t("eta_label", eta="00:00"))
+            self.status_lbl.configure(text=self._t("done_status"), text_color="#2ecc71")
+
+            open_now = messagebox.askyesno(
+                self._t("open_prompt_title"),
+                self._t("open_prompt_msg")
+            )
+            if open_now:
+                self._open_download_dir()
+        else:
+            self.status_lbl.configure(text=self._t("failed_status"), text_color="#e74c3c")
+
+
+if __name__ == "__main__":
+    app = YouTubeDownloaderApp()
+    app.mainloop()
